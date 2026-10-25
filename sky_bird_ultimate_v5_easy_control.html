@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Sky Bird Adventure</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#63d7ff;font-family:Arial,sans-serif}
+body{touch-action:none}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+button{font-family:Arial,sans-serif;cursor:pointer;user-select:none}
+#ui{position:fixed;inset:0;pointer-events:none}
+#sound,#pause{
+ position:absolute;top:max(14px,env(safe-area-inset-top));width:50px;height:50px;
+ border:0;border-radius:17px;background:#ffffffd9;box-shadow:0 5px 18px #24516a33;
+ font-size:25px;pointer-events:auto
+}
+#sound{left:14px} #pause{right:14px}
+#menu{
+ position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+ pointer-events:auto;background:linear-gradient(#36b9f033,#fff2);
+}
+.card{
+ width:min(88vw,390px);padding:26px 22px 22px;border-radius:30px;
+ background:#ffffffed;box-shadow:0 18px 50px #164c6333;text-align:center;
+}
+.logo{font-size:66px;line-height:1;margin-bottom:8px}
+h1{margin:0;color:#16485c;font-size:34px}
+.sub{margin:8px 0 20px;color:#527384;font-size:16px}
+.big{
+ border:0;width:100%;padding:16px;border-radius:19px;background:#ffb82e;color:#fff;
+ font-size:23px;font-weight:800;box-shadow:0 7px 0 #dc8b19
+}
+.big:active{transform:translateY(4px);box-shadow:0 3px 0 #dc8b19}
+.help{margin-top:15px;color:#6a8794;font-size:14px}
+#gameover{display:none}
+#scoreBadge{
+ position:absolute;top:max(16px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);
+ color:#fff;font-size:50px;font-weight:900;text-shadow:0 4px 0 #32718a,0 7px 16px #1d526477;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <button id="sound" aria-label="الصوت">🔊</button>
+  <button id="pause" aria-label="إيقاف">⏸️</button>
+  <div id="scoreBadge">0</div>
+
+  <div id="menu">
+    <div class="card" id="startCard">
+      <div class="logo">🐦✨</div>
+      <h1>مغامرة الطائر</h1>
+      <div class="sub">طَيّر العصفور بين المواسير واجمع النجوم!</div>
+      <button class="big" id="startBtn">ابدأ اللعب 🚀</button>
+      <div class="help">👆 المس الشاشة للطيران</div>
+    </div>
+
+    <div class="card" id="gameover">
+      <div class="logo">🏆🐦</div>
+      <h1>رحلة رائعة!</h1>
+      <div class="sub" id="result">نتيجتك: 0</div>
+      <button class="big" id="againBtn">العب تاني 🔥</button>
+      <div class="help" id="bestText">أفضل نتيجة: 0</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
+const menu=document.getElementById("menu"),startCard=document.getElementById("startCard");
+const overCard=document.getElementById("gameover"),startBtn=document.getElementById("startBtn");
+const againBtn=document.getElementById("againBtn"),result=document.getElementById("result");
+const bestText=document.getElementById("bestText"),scoreBadge=document.getElementById("scoreBadge");
+const soundBtn=document.getElementById("sound"),pauseBtn=document.getElementById("pause");
+
+let W=0,H=0,dpr=1,last=0,time=0;
+let state="menu",score=0,best=Number(localStorage.skyBirdBest||0);
+let runTime=0,checkpointReached=false,checkpointScore=0,checkpointTime=0,movingStage=false;
+let bird, pipes=[],stars=[],clouds=[],particles=[];
+let pipeClock=0,speed=230,shake=0;
+let muted=false,audio=null,master=null,musicTimer=null,musicIndex=0;
+
+function resize(){
+ dpr=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight;
+ canvas.width=W*dpr; canvas.height=H*dpr;
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener("resize",resize); resize();
+
+function initWorld(){
+ bird={x:W*.28,y:H*.45,vy:0,r:21,rot:0,wing:0};
+ pipes=[];stars=[];particles=[];pipeClock=0;score=0;speed=Math.max(165,Math.min(215,W*.24));shake=0;
+ runTime=0;checkpointReached=false;checkpointScore=0;checkpointTime=0;movingStage=false;
+ clouds=Array.from({length:7},(_,i)=>({
+   x:(i*W/5+Math.random()*W)%W,y:45+Math.random()*H*.35,
+   s:.7+Math.random()*.9,v:8+Math.random()*13
+ }));
+ scoreBadge.textContent="0";
+}
+
+function audioStart(){
+ if(muted)return;
+ if(!audio){
+   audio=new (window.AudioContext||window.webkitAudioContext)();
+   master=audio.createGain();master.gain.value=.045;master.connect(audio.destination);
+ }
+ if(audio.state==="suspended")audio.resume();
+ if(!musicTimer)musicTimer=setInterval(playMusic,420);
+}
+function tone(freq,dur=.16,vol=.5,type="triangle"){
+ if(!audio||muted)return;
+ const o=audio.createOscillator(),g=audio.createGain();
+ o.type=type;o.frequency.value=freq;
+ g.gain.setValueAtTime(.0001,audio.currentTime);
+ g.gain.exponentialRampToValueAtTime(vol,audio.currentTime+.018);
+ g.gain.exponentialRampToValueAtTime(.0001,audio.currentTime+dur);
+ o.connect(g);g.connect(master);o.start();o.stop(audio.currentTime+dur+.03);
+}
+function playMusic(){
+ if(state!=="playing"||muted)return;
+ const notes=[523.25,659.25,783.99,659.25,587.33,698.46,880,698.46,
+              659.25,783.99,987.77,783.99,698.46,659.25,587.33,523.25];
+ tone(notes[musicIndex++%notes.length],.34,.32,"sine");
+}
+function flapSound(){tone(720,.09,.18,"sine")}
+function coinSound(){tone(880,.10,.32,"triangle");setTimeout(()=>tone(1174,.12,.24,"triangle"),65)}
+function crashSound(){tone(180,.22,.45,"sawtooth")}
+
+function startGame(){
+ audioStart(); initWorld(); state="playing"; menu.style.display="none"; pauseBtn.style.display="block";
+ bird.vy=-470; flapSound();
+}
+function gameOver(){
+ if(state!=="playing")return;
+ crashSound(); shake=9;
+ if(checkpointReached){
+   // Respawn at the latest checkpoint with a short invulnerability period.
+   bird.x=W*.28; bird.y=H*.45; bird.vy=0; bird.rot=0;
+   pipes=[]; stars=[]; particles=[];
+   pipeClock=0; runTime=checkpointTime;
+   score=checkpointScore; scoreBadge.textContent=score;
+   checkpointReached=false;
+   movingStage=true;
+   setTimeout(()=>{ if(state==="playing") bird.vy=-470; },180);
+   return;
+ }
+ state="gameover";
+ best=Math.max(best,score);localStorage.skyBirdBest=best;
+ result.textContent="نتيجتك: "+score+" ⭐";
+ bestText.textContent="أفضل نتيجة: "+best+" 🏆";
+ menu.style.display="flex";startCard.style.display="none";overCard.style.display="block";
+ pauseBtn.style.display="none";
+}
+function flap(){
+ if(state==="playing"){bird.vy=-470;flapSound();spawnParticles(bird.x-5,bird.y+10,3)}
+}
+
+function makePipe(){
+ const gap=Math.max(235,Math.min(270,H*.40));
+ const minTop=75,maxTop=Math.max(minTop+1,H-115-gap);
+ const top=minTop+Math.random()*(maxTop-minTop);
+ const p={
+  x:W+40,w:78,
+  top,bottom:top+gap,
+  gap:gap,
+  baseCenter:top+gap/2,
+  wave:Math.random()*Math.PI*2,
+  passed:false
+};
+ pipes.push(p);
+ // one star in the safe gap
+ stars.push({x:p.x+p.w+gap*.7,y:top+gap*.5, r:12,spin:0,got:false});
+}
+
+function spawnParticles(x,y,n){
+ for(let i=0;i<n;i++)particles.push({x,y,vx:(Math.random()-.5)*100,vy:(Math.random()-.5)*100,life:.5,s:.7+Math.random()*1.4});
+}
+function collectStar(s){
+ s.got=true;score++;scoreBadge.textContent=score;coinSound();spawnParticles(s.x,s.y,12);
+}
+
+function update(dt){
+ time+=dt;
+ if(shake>0)shake*=.88;
+ if(state!=="playing")return;
+ runTime+=dt;
+ // Checkpoint after 2 minutes. After reaching it, the next stage uses moving pipes.
+ if(!checkpointReached && !movingStage && runTime>=120){
+   checkpointReached=true;
+   checkpointScore=score;
+   checkpointTime=runTime;
+   movingStage=true;
+   spawnParticles(bird.x,bird.y,28);
+   tone(1046,.16,.4,"triangle");
+   setTimeout(()=>tone(1318,.22,.35,"triangle"),130);
+ }
+ bird.vy+=720*dt; bird.y+=bird.vy*dt; bird.rot=Math.max(-.45,Math.min(1.05,bird.vy/600));bird.wing+=dt*12;
+ pipeClock+=dt;
+ if(pipeClock>2.5){pipeClock=0;makePipe();}
+ for(const p of pipes){
+   p.x-=speed*dt;
+   if(movingStage){
+     // Both pipe halves use the SAME center, so the opening always stays aligned.
+     p.wave=(p.wave||0)+dt*1.0;
+     const gap=p.gap || (p.bottom-p.top);
+     const amp=Math.min(35,H*0.045);
+     const minCenter=70+gap/2;
+     const maxCenter=H-105-gap/2;
+     let center=(p.baseCenter || ((p.top+p.bottom)/2)) + Math.sin(p.wave)*amp;
+     center=Math.max(minCenter,Math.min(maxCenter,center));
+     p.top=center-gap/2;
+     p.bottom=center+gap/2;
+   }
+   if(!p.passed && p.x+p.w<bird.x){p.passed=true;score++;scoreBadge.textContent=score;spawnParticles(bird.x,bird.y,7);}
+   const hitX=bird.x+bird.r*.75>p.x && bird.x-bird.r*.75<p.x+p.w;
+   const hitY=bird.y-bird.r*.75<p.top || bird.y+bird.r*.75>p.bottom;
+   if(hitX&&hitY)gameOver();
+ }
+ pipes=pipes.filter(p=>p.x+p.w>-40);
+ for(const s of stars){
+   s.x-=speed*dt;s.spin+=dt*5;
+   const dx=s.x-bird.x,dy=s.y-bird.y;
+   if(!s.got && dx*dx+dy*dy<(bird.r+s.r)**2)collectStar(s);
+ }
+ stars=stars.filter(s=>s.x>-40&&!s.got);
+ for(const cl of clouds){cl.x-=cl.v*dt;if(cl.x<-130)cl.x=W+70}
+ for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=130*dt;p.life-=dt}
+ particles=particles.filter(p=>p.life>0);
+ if(bird.y-bird.r<0||bird.y+bird.r>H-62)gameOver();
+}
+
+function rr(x,y,w,h,r){
+ ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();
+}
+function drawCloud(cl){
+ ctx.save();ctx.translate(cl.x,cl.y);ctx.scale(cl.s,cl.s);
+ ctx.fillStyle="#fff";ctx.beginPath();
+ ctx.arc(0,8,22,0,7);ctx.arc(25,-5,29,0,7);ctx.arc(54,8,21,0,7);ctx.fill();ctx.restore();
+}
+function drawPipe(p){
+ const g=ctx.createLinearGradient(p.x,0,p.x+p.w,0);
+ g.addColorStop(0,"#168c49");g.addColorStop(.45,"#63d76b");g.addColorStop(1,"#08773d");
+ ctx.fillStyle=g;rr(p.x,-15,p.w,p.top+15,12);rr(p.x,p.bottom,p.w,H-p.bottom-62,12);
+ ctx.fillStyle="#0b713a";
+rr(p.x-8,p.top-18,p.w+16,24,9);
+rr(p.x-8,p.bottom-6,p.w+16,24,9);
+ ctx.fillStyle="#9ae77d";ctx.globalAlpha=.4;ctx.fillRect(p.x+10,0,9,p.top);ctx.fillRect(p.x+10,p.bottom,9,H-p.bottom-62);ctx.globalAlpha=1;
+}
+function drawStar(s){
+ if(s.got)return;
+ ctx.save();ctx.translate(s.x,s.y);ctx.rotate(s.spin);
+ ctx.shadowColor="#ffe35b";ctx.shadowBlur=14;ctx.fillStyle="#ffd83d";
+ ctx.beginPath();
+ for(let i=0;i<10;i++){let a=-Math.PI/2+i*Math.PI/5,r=i%2?5:13;ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r)}
+ ctx.closePath();ctx.fill();ctx.restore();
+}
+function drawBird(){
+ ctx.save();
+ ctx.translate(bird.x,bird.y);
+ ctx.rotate(bird.rot);
+
+ // soft glow
+ ctx.globalAlpha=.22;
+ ctx.fillStyle="#ffffff";
+ ctx.beginPath();ctx.arc(0,0,32,0,Math.PI*2);ctx.fill();
+ ctx.globalAlpha=1;
+
+ // tail
+ ctx.fillStyle="#ffb52b";
+ ctx.beginPath();ctx.moveTo(-18,2);ctx.lineTo(-34,-8);ctx.lineTo(-29,8);ctx.lineTo(-35,18);ctx.closePath();ctx.fill();
+
+ // body
+ ctx.fillStyle="#ffd83d";
+ ctx.beginPath();ctx.ellipse(0,0,24,20,0,0,Math.PI*2);ctx.fill();
+
+ // belly
+ ctx.fillStyle="#fff1a8";
+ ctx.beginPath();ctx.ellipse(-5,6,13,11,0,0,Math.PI*2);ctx.fill();
+
+ // wing
+ ctx.fillStyle="#f0a927";
+ ctx.save();
+ ctx.rotate(Math.sin(bird.wing)*.18);
+ ctx.beginPath();ctx.ellipse(-9,7,13,8,-.35,0,Math.PI*2);ctx.fill();
+ ctx.restore();
+
+ // crest
+ ctx.fillStyle="#ff9f1c";
+ ctx.beginPath();ctx.moveTo(-8,-16);ctx.lineTo(-3,-29);ctx.lineTo(3,-17);ctx.closePath();ctx.fill();
+
+ // eye white + pupil
+ ctx.fillStyle="#fff";
+ ctx.beginPath();ctx.arc(11,-8,7,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle="#17242b";
+ ctx.beginPath();ctx.arc(13,-8,3,0,Math.PI*2);ctx.fill();
+
+ // beak
+ ctx.fillStyle="#ff6f2d";
+ ctx.beginPath();ctx.moveTo(20,-2);ctx.lineTo(39,5);ctx.lineTo(20,11);ctx.closePath();ctx.fill();
+
+ ctx.restore();
+}
+function draw(){
+ let sx=(Math.random()-.5)*shake,sy=(Math.random()-.5)*shake;
+ ctx.save();ctx.translate(sx,sy);
+ const sky=ctx.createLinearGradient(0,0,0,H);sky.addColorStop(0,"#42c5ff");sky.addColorStop(1,"#c9f3ff");
+ ctx.fillStyle=sky;ctx.fillRect(-20,-20,W+40,H+40);
+ for(const cl of clouds)drawCloud(cl);
+ for(const p of pipes)drawPipe(p);
+ for(const s of stars)drawStar(s);
+ for(const p of particles){ctx.globalAlpha=Math.max(0,p.life*2);ctx.fillStyle="#ffe35b";ctx.beginPath();ctx.arc(p.x,p.y,p.s,0,7);ctx.fill();ctx.globalAlpha=1}
+ drawBird();
+ // Stage/checkpoint banner
+ if(state==="playing" && movingStage && runTime-checkpointTime<4){
+   ctx.save();
+   ctx.globalAlpha=.9;
+   ctx.fillStyle="#ffffffdd";
+   rr(W/2-125,78,250,48,18);
+   ctx.fillStyle="#24566a";
+   ctx.font="bold 18px Arial";
+   ctx.textAlign="center";
+   ctx.fillText("⚡ المرحلة الصعبة — المواسير تتحرك!",W/2,109);
+   ctx.restore();
+ }
+ // ground
+ ctx.fillStyle="#8bd849";ctx.fillRect(-20,H-62,W+40,62);ctx.fillStyle="#69b83b";ctx.fillRect(-20,H-62,W+40,9);
+ for(let i=-10;i<W+20;i+=32){ctx.fillStyle="#b9eb70";ctx.fillRect(i,H-47,17,4)}
+ ctx.restore();
+}
+
+function loop(t){
+ const dt=Math.min(.033,(t-last||16)/1000);last=t;update(dt);draw();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function hideMenu(){menu.style.display="none"}
+startBtn.addEventListener("click",e=>{e.stopPropagation();startGame()});
+againBtn.addEventListener("click",e=>{e.stopPropagation();startGame()});
+canvas.addEventListener("pointerdown",e=>{
+ e.preventDefault();
+ if(state==="playing")flap();
+});
+canvas.addEventListener("touchstart",e=>e.preventDefault(),{passive:false});
+pauseBtn.addEventListener("click",e=>{
+ e.stopPropagation();
+ if(state==="playing"){state="paused";pauseBtn.textContent="▶️";}else if(state==="paused"){state="playing";pauseBtn.textContent="⏸️";audioStart();}
+});
+soundBtn.addEventListener("click",e=>{
+ e.stopPropagation();muted=!muted;soundBtn.textContent=muted?"🔇":"🔊";if(!muted)audioStart();
+});
+addEventListener("keydown",e=>{
+ if(e.code==="Space"||e.code==="ArrowUp"){e.preventDefault();if(state==="menu"||state==="gameover")startGame();else if(state==="playing")flap();}
+});
+initWorld();
+startCard.style.display="block";overCard.style.display="none";pauseBtn.style.display="none";
+</script>
+</body>
+</html>
